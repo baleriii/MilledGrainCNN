@@ -1,0 +1,476 @@
+{
+ "cells": [
+  {
+   "cell_type": "markdown",
+   "id": "c45b29ad-6bfa-42e0-b798-1a54db7512cc",
+   "metadata": {},
+   "source": [
+    "# MilledGrainCNN\n",
+    "\n",
+    "> Development of a MilledGrain Image Classifier using CNN"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "2e2f9a18-6497-4129-931b-705f7dc7c64b",
+   "metadata": {},
+   "source": [
+    "## Revision History\n",
+    "\n",
+    "- yyyy/mm/dd Activity"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "10643df4-d66a-40aa-a4a9-7e25d869e223",
+   "metadata": {},
+   "source": [
+    "## Step 1. Install Dependencies\n",
+    "\n",
+    "> Install the required third-party libraries."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "d5c6cc75-23e2-4d22-b15a-e7bcd01afd43",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "%pip install -U jupyterlab\n",
+    "%pip install -U notebook\n",
+    "%pip install -U pandas\n",
+    "%pip install -U opencv-python\n",
+    "%pip install -U scikit-learn\n",
+    "%pip install -U scikit-image\n",
+    "%pip install -U matplotlib\n",
+    "%pip install -U pillow\n",
+    "%pip install -U seaborn\n",
+    "%pip install -U tensorflow\n",
+    "%pip install -U tabulate\n",
+    "print(\"Environment is ready...\")"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "823ad470-f1e2-417c-9b34-511cc2960027",
+   "metadata": {},
+   "source": [
+    "## Step 2: Import the Packages\n",
+    "\n",
+    "> Import all third-party libraries necessary for the CNN model to execute successfully."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "7fa6e807-0737-470c-be1d-ecace25e9206",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "import os\n",
+    "\n",
+    "os.environ[\"TF_ENABLE_ONEDNN_OPTS\"] = \"0\"\n",
+    "os.environ[\"TF_CPP_MIN_LOG_LEVEL\"] = \"3\"\n",
+    "\n",
+    "import glob\n",
+    "import json\n",
+    "import time\n",
+    "import warnings\n",
+    "from datetime import datetime\n",
+    "\n",
+    "warnings.filterwarnings(\"ignore\", category=RuntimeWarning, message=\"os.fork()\")\n",
+    "warnings.filterwarnings(\"ignore\", category=UserWarning, message=\"Your `PyDataset` class should call\")\n",
+    "\n",
+    "import cv2\n",
+    "import numpy as np\n",
+    "import pandas as pd\n",
+    "import tensorflow as tf\n",
+    "from tensorflow.keras.regularizers import l2\n",
+    "from tensorflow.keras.models import Sequential\n",
+    "from sklearn.preprocessing import LabelBinarizer\n",
+    "from sklearn.model_selection import train_test_split\n",
+    "from tensorflow.keras.preprocessing.image import ImageDataGenerator\n",
+    "from tensorflow.keras.layers import (\n",
+    "    Input, Conv2D, MaxPooling2D, BatchNormalization, Dropout, Flatten, Dense\n",
+    ")\n",
+    "from tensorflow.keras.optimizers import Adadelta\n",
+    "\n",
+    "\n",
+    "gpus = tf.config.list_physical_devices(\"GPU\")\n",
+    "\n",
+    "if gpus:\n",
+    "    try:\n",
+    "        for gpu in gpus:\n",
+    "            tf.config.experimental.set_memory_growth(gpu, True)\n",
+    "    except RuntimeError as e:\n",
+    "            print(e)\n",
+    "    print(\"GPU detected. Running on GPU.\")\n",
+    "else:\n",
+    "    print(\"No GPU detected. Running on CPU.\")"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "3752a1b4-8aba-4201-828f-51f1ec497013",
+   "metadata": {},
+   "source": [
+    "## Step 3: Load Datasets\n",
+    "\n",
+    "> Load and prepare the training, validation, and testing datasets."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "c9dfcf7d-3515-4a20-b47c-a7aa352b03f4",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "DATA_DIR = \"data\"\n",
+    "IMAGE_SIZE = 224\n",
+    "IMAGE_CHANNELS = 3\n",
+    "BATCH_SIZE = 8\n",
+    "\n",
+    "all_images = glob.glob(f\"{DATA_DIR}/*/*.jpg\")\n",
+    "df = pd.DataFrame({\n",
+    "    \"filepath\": all_images,\n",
+    "    \"label\": [os.path.basename(os.path.dirname(p)) for p in all_images]\n",
+    "})\n",
+    "\n",
+    "train_val_df, test_df = train_test_split(df, test_size=0.1, stratify=df[\"label\"], shuffle=True)\n",
+    "train_df, val_df = train_test_split(\n",
+    "                        train_val_df,\n",
+    "                        test_size=0.2,\n",
+    "                        stratify=train_val_df[\"label\"],\n",
+    "                        shuffle=True)\n",
+    "\n",
+    "generator1 = ImageDataGenerator(\n",
+    "    rescale=1./255,\n",
+    "    rotation_range=20,\n",
+    "    width_shift_range=0.2,\n",
+    "    height_shift_range=0.2,\n",
+    "    shear_range=0.2,\n",
+    "    zoom_range=0.2,\n",
+    "    horizontal_flip=True,\n",
+    "    fill_mode=\"nearest\"\n",
+    ")\n",
+    "\n",
+    "train_data = generator1.flow_from_dataframe(\n",
+    "    train_df, x_col=\"filepath\", y_col=\"label\", target_size=(IMAGE_SIZE, IMAGE_SIZE),\n",
+    "    batch_size=BATCH_SIZE, class_mode=\"categorical\", shuffle=True\n",
+    ")\n",
+    "\n",
+    "NUM_CLASSES = max(train_data.classes) + 1\n",
+    "\n",
+    "generator2 = ImageDataGenerator(rescale=1./255)\n",
+    "\n",
+    "val_data = generator2.flow_from_dataframe(\n",
+    "    val_df, x_col=\"filepath\", y_col=\"label\", target_size=(IMAGE_SIZE, IMAGE_SIZE),\n",
+    "    batch_size=BATCH_SIZE, class_mode=\"categorical\", shuffle=True\n",
+    ")\n",
+    "\n",
+    "test_data = generator2.flow_from_dataframe(\n",
+    "    test_df, x_col=\"filepath\", y_col=\"label\", target_size=(IMAGE_SIZE, IMAGE_SIZE),\n",
+    "    batch_size=BATCH_SIZE, class_mode=\"categorical\", shuffle=False\n",
+    ")                       "
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "257a1066-525f-4972-8ae2-2c47b7f2326e",
+   "metadata": {},
+   "source": [
+    "## Step 4: Define the Architecture\n",
+    "\n",
+    "> Define the structure of the CNN for MilledGrain classification."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "5d67faf5-ebfa-4cfc-a698-26ee96d1bd83",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "model = Sequential()\n",
+    "\n",
+    "model.add(Input(shape=(IMAGE_SIZE, IMAGE_SIZE, IMAGE_CHANNELS)))\n",
+    "\n",
+    "model.add(Conv2D(32, (3, 3), activation=\"swish\", padding=\"same\"))\n",
+    "model.add(Conv2D(32, (3, 3), activation=\"swish\", padding=\"same\"))\n",
+    "model.add(Conv2D(32, (3, 3), activation=\"swish\", padding=\"same\"))\n",
+    "model.add(MaxPooling2D((2, 2)))\n",
+    "\n",
+    "model.add(Conv2D(64, (3, 3), activation=\"swish\", padding=\"same\"))\n",
+    "model.add(MaxPooling2D((2, 2)))\n",
+    "model.add(Dropout(0.1))\n",
+    "\n",
+    "model.add(Flatten())\n",
+    "model.add(Dense(32, activation=\"swish\"))\n",
+    "model.add(Dense(32, activation=\"swish\"))\n",
+    "model.add(Dropout(0.1))\n",
+    "\n",
+    "model.add(Dense(NUM_CLASSES, activation=\"softmax\"))\n",
+    "\n",
+    "optimizer = Adadelta(learning_rate=1.0, rho=0.95)\n",
+    "model.compile(optimizer=optimizer, loss=\"categorical_crossentropy\",\n",
+    "metrics=[\"accuracy\"])\n",
+    "\n",
+    "model.summary()"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "4427704b-e819-4f2d-90b4-a58b9a753c2c",
+   "metadata": {},
+   "source": [
+    "## Step 5: Train the Model\n",
+    "\n",
+    "> Feed the training-val dataset to the compiled CNN model."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "23a5fdec-06e7-4b85-9329-4905b1685002",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "EPOCHS = 100\n",
+    "MODELS = \"models\"\n",
+    "ANALYSIS = \"analysis\"\n",
+    "ARCHITECTURE = \"CNN\"\n",
+    "\n",
+    "os.makedirs(MODELS, exist_ok=True)\n",
+    "os.makedirs(ANALYSIS, exist_ok=True)\n",
+    "\n",
+    "training_timestamp = int(time.time())\n",
+    "\n",
+    "history = model.fit(train_data, validation_data=val_data, epochs=EPOCHS)\n",
+    "\n",
+    "training_duration = (int(time.time()) - training_timestamp) / 60\n",
+    "fullpath = f\"{MODELS}/topic.{ARCHITECTURE}_{training_timestamp}.keras\"\n",
+    "model.save(fullpath)\n",
+    "\n",
+    "with open(f\"{ANALYSIS}/metrics_{training_timestamp}.json\", \"w\") as f:\n",
+    "    json.dump({\n",
+    "        \"loss\": history.history[\"loss\"],\n",
+    "        \"accuracy\": history.history[\"accuracy\"],\n",
+    "        \"val_loss\": history.history[\"val_loss\"],\n",
+    "        \"val_accuracy\": history.history[\"val_accuracy\"]\n",
+    "    }, f, indent=4)\n",
+    "    \n",
+    "print(f\"Training completed in {training_duration:.2f} minutes.\")\n",
+    "print(f\"Metrics saved to '{ANALYSIS}/metrics_{training_timestamp}.json'\")\n",
+    "print(f\"Model saved to '{fullpath}'\")"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "244d2e69-43ae-4a1e-8bf8-06e20985844e",
+   "metadata": {},
+   "source": [
+    "## Step 6: Generate Training Analysis\n",
+    "\n",
+    "**Metrics Definitions**\n",
+    "\n",
+    "- Loss is computed based on how far each prediction is from the ground truth,\n",
+    "specifically using Categorical Cross-entropy.\n",
+    "- Accuracy is the proportion of correct predictions to the total predictions."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "d5c6f712-02b8-43fa-9200-808e903b288a",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "import seaborn as sns\n",
+    "import matplotlib.pyplot as plt\n",
+    "\n",
+    "with open(f\"{ANALYSIS}/metrics_{training_timestamp}.json\", \"r\") as f:\n",
+    "    metrics = json.load(f)\n",
+    "\n",
+    "epochs = [i for i in range(1, len(metrics[\"loss\"])+1)]\n",
+    "\n",
+    "plt.figure(figsize=(8, 6))\n",
+    "sns.lineplot(x=epochs, y=metrics[\"loss\"], label=\"Training Loss\", color=\"blue\")\n",
+    "sns.lineplot(x=epochs, y=metrics[\"val_loss\"], label=\"Validation Loss\", color=\"orange\")\n",
+    "plt.title(\"Loss\")\n",
+    "plt.xlabel(\"Epochs\")\n",
+    "plt.ylabel(\"Loss\")\n",
+    "plt.legend()\n",
+    "plt.grid(True)\n",
+    "plt.savefig(f\"{ANALYSIS}/loss_plot_{training_timestamp}.png\")\n",
+    "plt.show()\n",
+    "\n",
+    "plt.figure(figsize=(8, 6))\n",
+    "sns.lineplot(x=epochs, y=metrics[\"accuracy\"], label=\"Training Accuracy\", color=\"green\")\n",
+    "sns.lineplot(x=epochs, y=metrics[\"val_accuracy\"], label=\"Validation Accuracy\", color=\"red\")\n",
+    "plt.title(\"Accuracy\")\n",
+    "plt.xlabel(\"Epochs\")\n",
+    "plt.ylabel(\"Accuracy\")\n",
+    "plt.legend()\n",
+    "plt.grid(True)\n",
+    "plt.savefig(f\"{ANALYSIS}/accuracy_plot_{training_timestamp}.png\")\n",
+    "plt.show()\n",
+    "\n",
+    "print(f\"\\nPlots saved to {ANALYSIS} directory.\")"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "4f465768-b0b6-4ec5-afcb-897f0c28e3d7",
+   "metadata": {},
+   "source": [
+    "## Step 7: Test the Model\n",
+    "\n",
+    "> Run the model using the test dataset."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "0466e45b-99e1-4115-bdcc-9b45d62c18cf",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "start_time = time.time()\n",
+    "\n",
+    "results = model.predict(test_data, verbose=1)\n",
+    "\n",
+    "prediction_duration = time.time() - start_time\n",
+    "image_prediction_time = prediction_duration / test_data.samples\n",
+    "\n",
+    "predictions = (results > 0.5).astype(\"int32\").flatten() if results.shape[1] == 1 else results.argmax(axis=1)\n",
+    "\n",
+    "print(f\"Total prediction time: {prediction_duration:.4f} seconds\")\n",
+    "print(f\"Time per image: {image_prediction_time:.4f} seconds\")"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "534abf1b-b0e6-488c-8871-9f8abfd0e717",
+   "metadata": {},
+   "source": [
+    "## Step 8: Display the Results\n",
+    "\n",
+    "> Show the actual classes and predictions."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "26f5555f-2692-4e7b-8129-9a73889a0de7",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "import matplotlib.pyplot as plt\n",
+    "import matplotlib.image as mpimg\n",
+    "from PIL import Image\n",
+    "\n",
+    "for fp, true, pred in zip(filepaths, true_indices, predictions):\n",
+    "    img = Image.open(fp).resize((224, 224))\n",
+    "\n",
+    "    filename = os.path.basename(fp)\n",
+    "    actual = labels[true].replace(\"-\", \" \").title()\n",
+    "    predicted = labels[pred].replace(\"-\", \" \").title()\n",
+    "\n",
+    "    plt.figure(figsize=(2.5, 3))\n",
+    "    plt.imshow(img)\n",
+    "    plt.axis('off')\n",
+    "\n",
+    "    text = f\"{filename}\\nActual: {actual}\\nPredicted: {predicted}\"\n",
+    "    plt.text(0.5, -0.1, text, fontsize=8, ha=\"center\", va=\"top\", transform=plt.gca().transAxes)\n",
+    " \n",
+    "    plt.tight_layout()\n",
+    "    plt.show()"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "350d093e-86d9-415d-86bb-ef8690f5653d",
+   "metadata": {},
+   "source": [
+    "## Step 9: Confusion Matrix with Cohen's Kappa Score Analysis\n",
+    "\n",
+    "> The ideal matrix is a left-to-right diagonal; however, the Cohen's Kappa score is\n",
+    "calculated to quantify the results."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "00cd0337-d45c-402c-ba0b-535ec456cc96",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "from sklearn.metrics import (\n",
+    "    confusion_matrix, ConfusionMatrixDisplay, cohen_kappa_score\n",
+    ")\n",
+    "\n",
+    "\n",
+    "true_indices = test_data.classes\n",
+    "class_labels = list(test_data.class_indices.keys())\n",
+    "\n",
+    "cm = confusion_matrix(true_indices, predictions)\n",
+    "disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=class_labels)\n",
+    "kappa_score = cohen_kappa_score(true_indices, predictions)\n",
+    "\n",
+    "fig, ax = plt.subplots(figsize=(8, 8))\n",
+    "disp.plot(cmap=\"magma\", ax=ax)\n",
+    "\n",
+    "plt.title(f\"Confusion Matrix with Cohen's Kappa: {kappa_score:.2f}\")\n",
+    "plt.savefig(f\"{ANALYSIS}/confusion-matrix_{training_timestamp}.png\")\n",
+    "plt.show()\n",
+    "\n",
+    "# Landis & Koch (1977) scale\n",
+    "kappa_scale = {\n",
+    "    (-1.0, 0.00): \"Poor agreement\",\n",
+    "    (0.00, 0.20): \"Slight agreement\",\n",
+    "    (0.21, 0.40): \"Fair agreement\",\n",
+    "    (0.41, 0.60): \"Moderate agreement\",\n",
+    "    (0.61, 0.80): \"Substantial agreement\",\n",
+    "    (0.81, 1.00): \"Almost perfect agreement\"\n",
+    "}\n",
+    "\n",
+    "for interval, label in kappa_scale.items():\n",
+    "    if interval[0] < kappa_score <= interval[1]:\n",
+    "        print(f\"Interpretation of Kappa Score: {label}\")\n",
+    "        break"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "b2b9c214-3b35-437a-b494-fbf1581f5b6d",
+   "metadata": {},
+   "source": [
+    "---\n",
+    "End code."
+   ]
+  }
+ ],
+ "metadata": {
+  "kernelspec": {
+   "display_name": "Python 3 (ipykernel)",
+   "language": "python",
+   "name": "python3"
+  },
+  "language_info": {
+   "codemirror_mode": {
+    "name": "ipython",
+    "version": 3
+   },
+   "file_extension": ".py",
+   "mimetype": "text/x-python",
+   "name": "python",
+   "nbconvert_exporter": "python",
+   "pygments_lexer": "ipython3",
+   "version": "3.12.10"
+  }
+ },
+ "nbformat": 4,
+ "nbformat_minor": 5
+}
